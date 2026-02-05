@@ -1,186 +1,118 @@
 ---
 name: agent-optimizer
-description: "Configure Clawdbot agent settings for concurrency, heartbeat monitoring, and task execution. Use to adjust agent/subagent limits, set up monitoring, offload long-running tasks, and establish reporting."
+description: "Optimize Clawdbot/OpenClaw agent operations: concurrency tuning, main↔subagent offloading, heartbeat/cron monitoring, and execution policy (auto-run vs confirmation) with safe risk tiers. Use when you want faster automation without sacrificing control for high-impact actions."
 ---
 
-# Agent Optimizer
+# Agent Optimizer / 代理优化器
 
-## Overview
+> Goal: keep the **main agent responsive**, push **long-running work** to subagents, and adopt a **risk-tier execution policy** so routine automation does **not** wait for confirmation.
 
-This skill configures Clawdbot agent settings to optimize performance and responsiveness. It handles concurrency tuning, heartbeat monitoring setup, and establishes best practices for main agent vs subagent task distribution.
+---
 
-## Core Capabilities
+## 1) Execution policy (risk tiers) / 执行策略（风险分级）
 
-### 1. Concurrency Configuration
+### Tier A — Auto-run (no confirmation) / 自动执行（不确认）
 
-Adjust how many tasks the main agent and subagents can run concurrently.
+Auto-run when the action is **read-only** or **reversible** and has **no external side effects**, e.g.:
+- Read/query: files, status/list/get, web_fetch, sessions_list/history
+- Workspace-only edits that are easy to revert (prefer small diffs; use git where available)
+- Low-cost retries / idempotent checks
 
-**Recommended Settings:**
-- Main agent `maxConcurrent`: 10-12 (for interactive responsiveness)
-- Subagent `maxConcurrent`: 16-20 (for background task throughput)
+**Response pattern:** acknowledge + start immediately.
+- CN: `收到，我开始做。预计 X 分钟，关键节点会回报。`
+- EN: `Got it—starting now. ETA X min; I’ll report at milestones.`
 
-**How to Apply:**
-```bash
-clawdbot gateway config.patch --raw '{"agents":{"defaults":{"maxConcurrent":10,"subagents":{"maxConcurrent":16}}}}'
-```
+### Tier B — Soft confirm (confirm only at the irreversible/high-cost step) / 轻确认（关键节点确认一次）
 
-### 2. Heartbeat Monitoring Setup
+Use when:
+- Meaningful cost/time (batch browser runs, many calls, heavy compute)
+- A missing parameter gates correctness (scope, deadline, target)
 
-Create automated monitoring for subagent tasks with periodic status reports.
+**Approach:** do prep/dry-run first → ask for 1 confirmation at the “point of no return”.
 
-**Implementation:**
-- Create a cron job with `*/10 * * * *` schedule (every 10 minutes)
-- Use `--system-event` trigger to run in main session context
-- Define monitoring logic in workspace `HEARTBEAT.md`
+### Tier C — Hard confirm (must confirm) / 强确认（必须确认）
 
-**Example:**
-```bash
-clawdbot cron add \
-  --name "task-heartbeat" \
-  --cron "*/10 * * * *" \
-  --system-event "检查子代理任务状态并汇报" \
-  --session main
-```
+Require explicit confirmation before actions with **external impact** or **hard-to-rollback** changes, e.g.:
+- Send messages to third parties / broadcast
+- Change gateway config / restart / self-update
+- Deleting/overwriting important files, credential operations
 
-### 3. Main Agent Behavior Guidelines
+### Stop & resume controls / 随时中止与继续
 
-**Main Agent Responsibilities:**
-- User conversation and interaction
-- Message receipt and acknowledgment
-- Task scheduling and orchestration
-- Subagent status monitoring
+Treat these as high priority:
+- `stop/暂停` → stop further tool calls / ask subagents to stop
+- `continue/继续` → resume from last safe checkpoint
 
-**Main Agent Must NOT Handle (offload to subagents):**
-- Image generation (image-generate)
-- Video generation (video-generate)
-- Browser automation (playwright-skill)
-- TikTok KOL finding (tiktok-kol-finder)
-- AI news tracking (ai-news-tracker)
-- Any other long-running or blocking tasks
+---
 
-**Using Subagents:**
-```python
-# Spawn subagent for long-running tasks
+## 2) Offload policy (main ↔ subagents) / 主/子代理卸载策略
+
+### Main agent responsibilities / 主代理职责
+- Conversation + clarification
+- Scheduling / orchestration
+- Summaries + user-facing reporting
+- Monitoring subagents
+
+### Offload triggers / 触发卸载条件（满足任一条就丢给子代理）
+- Expected runtime > 60–120s
+- Multi-step browser automation
+- ≥2 independent subtasks that can run in parallel
+- Anything likely to block interactive chat
+
+**Subagent spawning (example) / 子代理调用（示例）**
+```js
 await sessions_spawn({
-  task: "具体的任务描述",
-  label: "任务标签",
-  agentId: "main",
+  task: "Describe the long-running task clearly",
+  label: "short-label-for-status",
   cleanup: "delete"
 });
 ```
 
-### 4. Message Handling Workflow
+---
 
-**When Receiving Task Requests:**
+## 3) Concurrency tuning / 并发调优
 
-1. **Immediate Acknowledgment**
-   - Reply: `收到。` (first response, immediate)
-   - Do not make any tool calls before this acknowledgment
+### Baseline recommendations / 基线建议
+- Main `maxConcurrent`: **8–12** (optimize for responsiveness)
+- Subagents `maxConcurrent`: **12–20** (optimize for throughput)
 
-2. **Plan and Present**
-   - Analyze the request
-   - Create an execution plan
-   - Present the plan to the user
+### Adaptive guidance / 自适应建议
+- If latency/timeout rises → reduce subagent concurrency first.
+- If chat feels sluggish → reduce main concurrency.
 
-3. **Wait for Confirmation**
-   - Do NOT start execution
-   - Wait for explicit user confirmation
-
-4. **Execute After Confirmation**
-   - Only begin tool calls and task execution after user confirms
-
-**Example Flow:**
-```
-User: Push this skill to GitHub
-Agent: 收到。
-
-Agent: Here's my execution plan:
-       1. Initialize git repo
-       2. Add skill file
-       3. Create README
-       4. Commit and push
-
-User: Confirmed / OK
-Agent: [Starts execution with git commands]
+**Apply via config.patch / 配置示例**
+```bash
+clawdbot gateway config.patch --raw '{"agents":{"defaults":{"maxConcurrent":10,"subagents":{"maxConcurrent":16}}}}'
 ```
 
-**Important Rules:**
-- Always reply `收到。` BEFORE any tool calls
-- Never start execution before user confirms the plan
-- This ensures user has full control over task execution
-- The plan should include: what will be done, how, and any required inputs
+---
 
-### 5. Task Reporting Standards
+## 4) Monitoring: heartbeat + cron (don’t spam) / 监控：心跳 + 定时（避免刷屏）
 
-**When receiving task execution confirmation:**
-- User has reviewed and approved the plan
-- Immediately spawn subagent or execute the task
+### Default behavior / 默认行为
+- Check every 10 minutes, but **only notify on triggers**.
 
-**When task completes (success or failure):**
-- Success: `✅ 任务完成：[任务描述]`
-- Failure: `❌ 任务失败：[任务描述] - [错误原因]`
+### Notification triggers / 发送汇报的触发条件
+- Any task failed
+- Any task running > 30 min (configurable)
+- State transitions: running tasks 0→>0 or >0→0
+- User explicitly enabled “periodic report mode”
 
-**Heartbeat Report Format:**
+### Report format / 汇报格式
 ```
-🔄 任务状态汇报
-- 运行中：X 个任务
-  - [任务1] 类型：xxx，时长：X分X秒，状态：运行中
-  - [任务2] 类型：xxx，时长：X分X秒，状态：xxx
-- 近期完成：Y 个任务
-  - [任务1] 类型：xxx，耗时：X分X秒，结果：成功
-  - [任务2] 类型：xxx，耗时：X分X秒，结果：失败
+🔄 Task Status / 任务状态
+- Running / 运行中: X
+  - [label] age=12m status=running last="..."
+- Recent done / 近期完成: Y
+  - [label] dur=3m result=success
+  - [label] dur=1m result=failed reason="..."
 ```
 
-## Workflow: Complete Agent Optimization
+---
 
-### Step 1: Apply Concurrency Settings
+## 5) Resources / 资源
 
-Use `gateway config.patch` to set main and subagent concurrency limits.
+- `references/heartbeat-template.md`
+- `references/memory-template.md`
 
-### Step 2: Create Heartbeat Monitor
-
-Use `clawdbot cron add` to create a periodic monitoring job.
-
-### Step 3: Define Heartbeat Logic
-
-Create `HEARTBEAT.md` in workspace with monitoring workflow instructions.
-
-### Step 4: Document Behavior Guidelines
-
-Update `MEMORY.md` with main agent responsibilities and task offloading rules.
-
-### Step 5: Restart Gateway (if needed)
-
-Gateway restarts automatically after config changes via SIGUSR1.
-
-## Resources
-
-### scripts/
-
-- No scripts currently needed. Configuration is applied via gateway and cron tools.
-
-### references/
-
-- `memory-template.md` - Template for MEMORY.md with agent behavior guidelines
-- `heartbeat-template.md` - Template for HEARTBEAT.md with monitoring workflow
-
-## Validation Checklist
-
-Before considering the optimization complete, verify:
-
-- [ ] Concurrency settings applied correctly (`clawdbot gateway config.get`)
-- [ ] Cron job created and scheduled (`clawdbot cron list`)
-- [ ] HEARTBEAT.md exists with monitoring instructions
-- [ ] MEMORY.md documents agent behavior and task offloading
-- [ ] Gateway restarted and new settings active
-
-## Common Issues
-
-**Issue:** Cron job not appearing in list
-- **Solution:** Verify job creation command output, check cron status with `clawdbot cron status`
-
-**Issue:** Concurrency settings not taking effect
-- **Solution:** Gateway should auto-restart via SIGUSR1. If not, check logs and manual restart
-
-**Issue:** Heartbeat not firing
-- **Solution:** Verify `HEARTBEAT.md` exists and cron job `payload.kind` is "systemEvent"
+Use templates as a starting point; customize thresholds and reporting verbosity.

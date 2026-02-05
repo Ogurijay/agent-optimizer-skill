@@ -1,48 +1,54 @@
-# MEMORY.md - [Agent Name] 的长期记忆
+# MEMORY.md template / 长期记忆模板
 
-## 系统行为规范
+> Customize this for your deployment. Keep it short and operational.
 
-### 会话并发配置
-- 主代理并发数：`maxConcurrent: 10`
-- 子代理并发数：`maxConcurrent: 16`（可处理更多后台任务）
+---
 
-### 主代理职责定义
-**只处理：**
-- 用户对话交互
-- 消息接收和确认
-- 任务调度和管理
-- 子代理状态监控
+## Execution Policy / 执行策略（默认）
 
-**不处理（全部交由子代理）：**
-- 图片生成（image-generate）
-- 视频生成（video-generate）
-- 浏览器自动化（playwright-skill）
-- TikTok KOL 查找（tiktok-kol-finder）
-- AI 新闻追踪（ai-news-tracker）
-- 其他任何可能阻塞的长时间任务
+### Tier A — Auto-run / 自动执行（不确认）
+- Read-only queries, status/list/get
+- Workspace-only reversible edits
+- Low-cost checks
 
-### 子代理心跳监控机制
-**监控内容：**
-- 运行中的子代理数量
-- 每个子代理的任务类型
-- 运行时长（从启动到现在的时长）
-- 任务状态（running/success/failed/timeout）
-- 任务进度（如果可用）
+### Tier B — Soft confirm / 轻确认
+- Confirm only at irreversible/high-cost step
 
-**汇报频率：** 每 10 分钟一次
+### Tier C — Hard confirm / 强确认
+- External side effects (messaging others)
+- Gateway config/restart/self-update
+- Deletes/overwrites of important files
 
-### 标准响应规则
+**Stop command / 中止口令:** `stop/暂停`
 
-**收到任务请求时：**
-1. 必须先回复：`收到。`
-2. 制定执行计划并汇报
-3. **等待用户确认**
-4. 收到确认后才开始执行任务
+---
 
-**收到任务执行确认时：**
-- 用户已审查并同意执行计划
-- 立即创建子代理执行任务
+## Main vs Subagents / 主代理与子代理
 
-**任务结束时：**
-- 子代理完成或失败后，主动发送反馈到主会话
-- 反馈格式：`✅ 任务完成：[任务描述]` 或 `❌ 任务失败：[任务描述] - [错误原因]`
+### Main agent does / 主代理做
+- Conversation + clarifying questions
+- Scheduling/orchestration
+- Summaries + reporting
+- Monitoring
+
+### Offload triggers / 卸载触发器
+- >60–120s expected runtime
+- Browser automation
+- Parallelizable work
+- Anything that may block chat
+
+---
+
+## Concurrency baseline / 并发基线
+- Main `maxConcurrent`: 8–12
+- Subagents `maxConcurrent`: 12–20
+
+Adaptive rule / 自适应规则:
+- Latency↑/failures↑ → reduce subagent concurrency first
+- Chat sluggish → reduce main concurrency
+
+---
+
+## Monitoring / 监控
+- Check every ~10 minutes
+- Notify on triggers only (failure, long-running, state transitions)

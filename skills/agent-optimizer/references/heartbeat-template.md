@@ -1,42 +1,53 @@
-# HEARTBEAT.md - 心跳任务
+# HEARTBEAT.md / 心跳任务模板
 
-## 任务：子代理任务状态监控
+## Goal / 目标
+Check subagent task health periodically **without spamming**. Prefer **trigger-based notifications**.
 
-每 10 分钟执行一次，检查所有子代理的运行状态并汇报。
+每隔一段时间检查子代理任务状态，但**只在需要时汇报**，避免刷屏。
 
-### 执行步骤：
+---
 
-1. **获取所有会话列表**
-   - 使用 `sessions_list` 获取当前所有会话
-   - 限制数量为 50（足够覆盖所有子代理）
+## Schedule / 建议频率
+- Check interval: every **10 minutes** (or longer if you prefer)
+- 通常 `*/10 * * * *`
 
-2. **过滤子代理会话**
-   - 排除主会话（agent:main:main）
-   - 关注 `kind` 字段或通过 `label` 识别子代理任务
+---
 
-3. **汇总状态信息**
-   - 运行中的任务数量
-   - 每个任务的类型（通过 label 或 transcript 识别）
-   - **运行时间**：`服务器当前时间 - 任务启动时间`
-     - 从会话创建时间获取任务启动时间
-     - 或从 transcript 中解析第一个任务消息的时间戳
-   - 最近的消息内容（获取状态）
+## Steps / 执行步骤
 
-4. **发送汇报**
-   - 使用 `message` 工具发送到 Telegram
-   - 格式：
-     ```
-     🔄 任务状态汇报
-     - 运行中：X 个任务
-       - [任务1] 类型：xxx，时长：X分X秒，状态：运行中
-       - [任务2] 类型：xxx，时长：X分X秒，状态：xxx
-     - 近期完成：Y 个任务
-       - [任务1] 类型：xxx，耗时：X分X秒，结果：成功
-       - [任务2] 类型：xxx，耗时：X分X秒，结果：失败
-     ```
+1) **List sessions / 获取会话列表**
+- Use `sessions_list` (limit ~50)
+- Exclude main session
 
-### 注意事项
+2) **Classify / 分类**
+- Running: active subagent sessions
+- Done: recently finished sessions (if available) or sessions with final status message
 
-- 如果没有运行中的任务，可以不发送汇报或发送简短提示
-- 重点关注长时间运行的任务（超过 30 分钟）
-- 如果有失败的任务，需要说明失败原因
+3) **Compute age / 计算运行时长**
+- `now - createdAt` (or infer from first message timestamp)
+
+4) **Decide whether to notify / 是否需要发消息（触发器）**
+Notify only if any of these is true:
+- Any failure detected
+- Any task age > 30 minutes (configurable)
+- State transition: running 0→>0 or >0→0
+- User enabled periodic report mode
+
+5) **Send report / 发送汇报**
+Use `message` tool to send a compact report.
+
+---
+
+## Report format / 汇报格式
+```
+🔄 Task Status / 任务状态
+- Running / 运行中: X
+  - [label] age=12m status=running last="..."
+- Recent done / 近期完成: Y
+  - [label] dur=3m result=success
+  - [label] dur=1m result=failed reason="..."
+```
+
+## Notes / 注意
+- If nothing notable happened → send nothing (or a one-liner only if user asked).
+- Focus on actionable info: label, age, last output snippet, failure reason.
